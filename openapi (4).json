@@ -1,0 +1,1912 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Gregmorn Hub API",
+    "version": "1.0",
+    "description": "Gregmorn Hub API v1.0 — Integration Guide.\n\n## Environments\n- Stage and Prod are separate: **logins**, **secret keys**, **IP allowlists**.\n- Start on **Stage**. Move to **Prod** only after acceptance.\n\n## Required before start\n- Callback URL for seamless wallet callbacks.\n- IPs for allowlisting: separate lists for Stage and Prod.\n- Stage currency list. Callback URLs are configured **per currency**.\n\n## Integration models\n- **Seamless**: provider calls your wallet (`getBalance`, `writeBet`, `rollback`) with `X-Signature`.\n- **Transfer**: merchant calls `POST /apiIndividualWallet/` (`userCreate`, `userCash`, `userInfo`). No callbacks.\n"
+  },
+  "servers": [
+    {
+      "url": "https://office-api-dev.helcenac.com",
+      "description": "STAGE (auth and game list)"
+    },
+    {
+      "url": "https://client-api-dev.helcenac.com",
+      "description": "STAGE (open game)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "Authentication and token issuance."
+    },
+    {
+      "name": "Game Catalog",
+      "description": "Fetch available games for the user."
+    },
+    {
+      "name": "Game Session",
+      "description": "Open a game session (launch)."
+    },
+    {
+      "name": "Webhooks",
+      "description": "Seamless wallet callbacks: provider → merchant.\n\n- Every callback must include `X-Signature`.\n- Signature: HMAC-SHA256 over the raw body.\n- Use `transactionId` as the idempotency key.\n- Duplicate successful `writeBet`: return current balance, do not apply again.\n\n> **IMPORTANT:** if `getBalance` returns HTTP 400, do not start the spin. Do not use default or cached balance.\n"
+    },
+    {
+      "name": "Transfer Wallet",
+      "description": "Transfer wallet: merchant → Gregmorn Hub.\n\n- Endpoint: `POST /apiIndividualWallet/`\n- Wallet commands: `userCreate`, `userCash`, `userInfo`\n- Report commands: `reportBet`, `sessionList`, `sessionLog`\n- Signing: same `X-Signature` flow as `openGame` and webhooks.\n"
+    },
+    {
+      "name": "Free Spins",
+      "description": "Free spins: merchant → Gregmorn Hub.\n\n- Endpoint: `POST /games/freespinsInfo`\n- Signing: same `X-Signature` flow as `openGame` and webhooks.\n- To start a free-spin session, pass `freespinTotalBet` and `freespinCount` to `POST /games/openGame` after a successful eligibility check.\n"
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Common API",
+      "tags": [
+        "Auth",
+        "Game Catalog",
+        "Game Session"
+      ]
+    },
+    {
+      "name": "Seamless wallet (callbacks)",
+      "tags": [
+        "Webhooks"
+      ]
+    },
+    {
+      "name": "Transfer wallet (merchant-initiated)",
+      "tags": [
+        "Transfer Wallet"
+      ]
+    },
+    {
+      "name": "Free spins (merchant-initiated)",
+      "tags": [
+        "Free Spins"
+      ]
+    }
+  ],
+  "security": [],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "parameters": {
+      "XSignatureHeader": {
+        "name": "X-Signature",
+        "in": "header",
+        "required": true,
+        "description": "Hex HMAC-SHA256 over raw JSON body bytes using the user secret.",
+        "schema": {
+          "type": "string",
+          "examples": [
+            "9b7c2b6e0f5d8b7c2b6e0f5d8b7c2b6e0f5d8b7c2b6e0f5d8b7c2b6e0f5d"
+          ]
+        }
+      },
+      "TransferSignatureHeader": {
+        "name": "X-Signature",
+        "in": "header",
+        "required": true,
+        "description": "Hex HMAC-SHA256 over the exact raw JSON body using the player-specific `secret_api_key`.\n",
+        "schema": {
+          "type": "string",
+          "examples": [
+            "9b7c2b6e0f5d8b7c2b6e0f5d8b7c2b6e0f5d8b7c2b6e0f5d8b7c2b6e0f5d"
+          ]
+        }
+      },
+      "CurrencyISOPath": {
+        "name": "currencyISO",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Currency in ISO format (e.g., USD, EUR)."
+      }
+    },
+    "schemas": {
+      "ErrorOpenGame": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "fail"
+            ]
+          },
+          "error": {
+            "type": "string",
+            "examples": [
+              "unauthorized"
+            ]
+          },
+          "code": {
+            "type": "integer",
+            "examples": [
+              409
+            ]
+          },
+          "message": {
+            "type": "string",
+            "examples": [
+              "user_id is required"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "error",
+          "code",
+          "message"
+        ]
+      },
+      "LoginResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "JWT_access – Bearer access token for fetching game list."
+          },
+          "refreshToken": {
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          }
+        },
+        "required": [
+          "accessToken",
+          "refreshToken",
+          "user"
+        ]
+      },
+      "User": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "examples": [
+              "User"
+            ]
+          },
+          "currencies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserCurrency"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "login",
+          "role",
+          "currencies"
+        ]
+      },
+      "UserCurrency": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "type": "string",
+            "examples": [
+              "USD"
+            ]
+          },
+          "count": {
+            "type": "string",
+            "examples": [
+              "0"
+            ]
+          }
+        },
+        "required": [
+          "currency",
+          "count"
+        ]
+      },
+      "GameCatalogItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Game ID."
+          },
+          "isEnabled": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "imageUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "isEnabled",
+          "title",
+          "imageUrl",
+          "provider"
+        ]
+      },
+      "OpenGameRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "type": "string",
+            "description": "Game session currency (USD, EUR etc.)"
+          },
+          "demo": {
+            "type": "string",
+            "description": "\"1\" to start demo mode (no callbacks), \"0\" – real gameplay.",
+            "enum": [
+              "0",
+              "1"
+            ]
+          },
+          "exitUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "gameId": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "description": "ISO (en, es, fr, de etc.)"
+          },
+          "player_login": {
+            "type": "string",
+            "description": "Login name of the player that starts the game."
+          },
+          "balance": {
+            "type": "number",
+            "description": "Optional initial player balance on game start. Could be required by providers."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "API user ID."
+          },
+          "ip": {
+            "type": "string",
+            "description": "Optional player IP address. Some providers require it for launch, risk checks, or jurisdiction rules. Ask support if your provider requires `ip`."
+          },
+          "freespinTotalBet": {
+            "type": "integer",
+            "description": "Optional. Free spin bet amount."
+          },
+          "freespinCount": {
+            "type": "integer",
+            "description": "Optional. Count of free spins."
+          },
+          "callbackUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Override default callback URL in admin panel. Leave empty for default."
+          }
+        },
+        "required": [
+          "currency",
+          "demo",
+          "exitUrl",
+          "gameId",
+          "language",
+          "player_login",
+          "user_id"
+        ]
+      },
+      "OpenGameResponseSuccess": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "success"
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "content": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "game": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url"
+                ]
+              },
+              "gameRes": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sessionId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sessionId"
+                ]
+              }
+            },
+            "required": [
+              "game",
+              "gameRes"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "error",
+          "content"
+        ]
+      },
+      "FreespinsInfoRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "description": "API user ID."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Currency.",
+            "examples": [
+              "USD"
+            ]
+          },
+          "gameId": {
+            "type": "string",
+            "description": "Game ID from the game catalog."
+          }
+        },
+        "required": [
+          "user_id",
+          "currency",
+          "gameId"
+        ]
+      },
+      "FreespinsInfoResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "availableBets": {
+            "type": "array",
+            "description": "For `code: 0`, allowed free-spin bet amounts. An empty array means any amount is supported.",
+            "items": {
+              "type": "number"
+            }
+          },
+          "maxCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "For `code: 0`, maximum allowed number of free spins. `0` means there is no limit."
+          },
+          "code": {
+            "type": "integer",
+            "enum": [
+              0,
+              1,
+              9
+            ],
+            "description": "`0` — supported; `1` — not supported; `9` — provider-side error."
+          },
+          "message": {
+            "type": "string",
+            "description": "Error details when `code` is `9`; otherwise may be empty."
+          }
+        },
+        "required": [
+          "availableBets",
+          "maxCount",
+          "code",
+          "message"
+        ]
+      },
+      "CallbackGetBalanceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "enum": [
+              "getBalance"
+            ]
+          },
+          "login": {
+            "type": "string"
+          },
+          "sessionid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cmd",
+          "login",
+          "sessionid"
+        ]
+      },
+      "CallbackGetBalanceResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "balance": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "integer",
+            "description": "Callback processing duration in milliseconds."
+          },
+          "error": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "fail"
+            ]
+          }
+        },
+        "required": [
+          "balance",
+          "currency",
+          "duration",
+          "error",
+          "login",
+          "status"
+        ]
+      },
+      "CallbackWriteBetRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "enum": [
+              "writeBet"
+            ]
+          },
+          "bet": {
+            "type": "number, string",
+            "description": "NOTE, SL-Games and X-Games vendors are using STRING value type. Ensure to support both number and string."
+          },
+          "win": {
+            "type": "number, string",
+            "description": "NOTE, SL-Games and X-Games vendors are using STRING value type. Ensure to support both number and string."
+          },
+          "login": {
+            "type": "string"
+          },
+          "sessionid": {
+            "type": "string"
+          },
+          "transactionId": {
+            "type": "string",
+            "description": "Unique transaction ID of each callback. Must not repeat."
+          },
+          "gameId": {
+            "type": "string",
+            "description": "Unique game ID forwarded from openGame request."
+          },
+          "round_finished": {
+            "type": "boolean",
+            "description": "Round was finished."
+          },
+          "roundId": {
+            "type": "string",
+            "description": "Optional ID of the current round (Existance depends on provider)."
+          },
+          "promoFreespin": {
+            "type": "boolean",
+            "description": "Optional mark that determines round as a promo free spin bet-win (Existance depends on provider)."
+          },
+          "info": {
+            "type": "string",
+            "description": "Bet and win details from providers."
+          }
+        },
+        "required": [
+          "cmd",
+          "bet",
+          "win",
+          "login",
+          "sessionid",
+          "transactionId",
+          "round_finished",
+          "info"
+        ]
+      },
+      "CallbackWriteBetResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "balance": {
+            "type": "number"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "integer",
+            "description": "Callback processing duration in milliseconds."
+          },
+          "error": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "fail"
+            ]
+          }
+        },
+        "required": [
+          "balance",
+          "currency",
+          "duration",
+          "error",
+          "login",
+          "status"
+        ]
+      },
+      "CallbackRollbackRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "enum": [
+              "rollback"
+            ]
+          },
+          "bet": {
+            "type": "number",
+            "description": "The rollback amount matches the bet amount when the wager was accepted."
+          },
+          "win": {
+            "type": "number",
+            "description": "win (0)"
+          },
+          "login": {
+            "type": "string"
+          },
+          "sessionid": {
+            "type": "string"
+          },
+          "transactionId": {
+            "type": "string",
+            "description": "The rollback transaction matches the bet transaction (same transaction ID)."
+          },
+          "round_finished": {
+            "type": "boolean",
+            "description": "(true)"
+          },
+          "info": {
+            "type": "string"
+          },
+          "gameId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cmd",
+          "bet",
+          "win",
+          "login",
+          "sessionid",
+          "transactionId",
+          "round_finished",
+          "info",
+          "gameId"
+        ]
+      },
+      "TransferMoneyAmountString": {
+        "type": "string",
+        "description": "Decimal monetary amount encoded as string with up to 2 fractional digits.",
+        "examples": [
+          "100.00"
+        ]
+      },
+      "TransferWalletRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "enum": [
+              "userCreate",
+              "userCash",
+              "userInfo",
+              "reportBet",
+              "sessionList",
+              "sessionLog"
+            ],
+            "description": "Transfer wallet or report command.\n- `userCreate` creates a player wallet.\n- `userCash` changes the player balance.\n- `userInfo` returns the current player balance.\n- `reportBet` returns aggregated bet/win statistics for one day.\n- `sessionList` returns game sessions for the requested date range.\n- `sessionLog` returns spin-by-spin details for one session.\n"
+          },
+          "user_login": {
+            "type": "string",
+            "description": "Player login within the merchant hall. Required for `userCreate`, `userCash`, `userInfo`; optional filter for `sessionList`."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "User identifier used to resolve `secret_api_key` for signature validation."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Wallet currency for `userCreate`, `userCash`, and `userInfo`. Defaults to `USD`.",
+            "examples": [
+              "EUR"
+            ]
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "in",
+              "out"
+            ],
+            "description": "Required for `userCash`: `in` deposits money, `out` withdraws money."
+          },
+          "cash": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "Required for `reportBet`. Format: YYYY-MM-DD."
+          },
+          "date_from": {
+            "type": "string",
+            "format": "date",
+            "description": "Required for `sessionList`. Format: YYYY-MM-DD."
+          },
+          "date_to": {
+            "type": "string",
+            "format": "date",
+            "description": "Required for `sessionList`. Format: YYYY-MM-DD."
+          },
+          "session": {
+            "type": "string",
+            "description": "Required for `sessionLog`."
+          }
+        },
+        "required": [
+          "cmd",
+          "user_id"
+        ]
+      },
+      "TransferWalletContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "player_login": {
+            "type": "string"
+          },
+          "notification": {
+            "type": "string"
+          },
+          "cash": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "cash_before": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "info": {
+            "$ref": "#/components/schemas/TransferReportInfo"
+          },
+          "result": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferReportResultItem"
+            }
+          },
+          "log": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferSessionLogEntry"
+            }
+          }
+        }
+      },
+      "TransferReportInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "users_count": {
+            "type": "integer"
+          },
+          "total_bet": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "total_win": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "total_different": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "date_from": {
+            "type": "string",
+            "examples": [
+              "2024-04-12 00:00:00"
+            ]
+          },
+          "date_to": {
+            "type": "string",
+            "examples": [
+              "2024-04-12 23:59:59"
+            ]
+          }
+        }
+      },
+      "TransferReportResultItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "user_login": {
+            "type": "string"
+          },
+          "bet": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "win": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "different": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "start": {
+            "type": "string",
+            "examples": [
+              "2024-04-12 11:50:33"
+            ]
+          },
+          "end": {
+            "type": "string",
+            "examples": [
+              "2024-04-12 11:52:15"
+            ]
+          }
+        }
+      },
+      "TransferSessionLogEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "bet_info": {
+            "type": "string"
+          },
+          "date_time": {
+            "type": "string",
+            "examples": [
+              "2024-04-12 11:07:41"
+            ]
+          },
+          "action_id": {
+            "type": "string"
+          },
+          "win": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          },
+          "bet": {
+            "$ref": "#/components/schemas/TransferMoneyAmountString"
+          }
+        }
+      },
+      "TransferWalletResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "error"
+            ]
+          },
+          "microtime": {
+            "type": "number"
+          },
+          "date_time": {
+            "type": "string",
+            "examples": [
+              "2024-04-12 12:02:23"
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "content": {
+            "$ref": "#/components/schemas/TransferWalletContent"
+          }
+        },
+        "required": [
+          "status",
+          "microtime",
+          "date_time",
+          "error",
+          "content"
+        ]
+      }
+    }
+  },
+  "paths": {
+    "/apiIndividualWallet/": {
+      "post": {
+        "tags": [
+          "Transfer Wallet"
+        ],
+        "summary": "Transfer wallet command endpoint",
+        "operationId": "transferWalletCommand",
+        "security": [],
+        "servers": [
+          {
+            "url": "https://twalletvault.api.games-hub.net",
+            "description": "Transfer wallet API host"
+          }
+        ],
+        "description": "Single entry point for transfer wallet operations.\n\nRequired base fields: `cmd`, `user_id`.\n\nCommands:\n- `userCreate`: create player wallet.\n- `userCash`: change balance (`operation = in|out`).\n- `userInfo`: return current balance.\n- `reportBet`: return aggregated bet/win statistics for one day.\n- `sessionList`: return game sessions for the requested date range.\n- `sessionLog`: return spin-by-spin details for one session.\n\nSigning:\n- Header: `X-Signature`\n- Secret: player-specific `secret_api_key` by `user_id`\n- Payload: exact raw JSON body bytes\n- Algorithm: HMAC-SHA256, hex digest\n\n`user_login` is required for `userCreate`, `userCash`, `userInfo` and can be used as an optional filter for `sessionList`.\n`currency` selects the player wallet currency for `userCreate`, `userCash`, `userInfo`; default is `USD`.\n`userCash.cash` must be a decimal string with up to 2 fractional digits.\nReport commands use the same signature model and can request only the last 10 days.\nReport totals are calculated from `writeBet` transactions and adjusted by `rollback` transactions.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TransferSignatureHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferWalletRequest"
+              },
+              "examples": {
+                "user_create": {
+                  "summary": "Create player wallet",
+                  "value": {
+                    "cmd": "userCreate",
+                    "user_login": "test_player",
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "currency": "EUR"
+                  }
+                },
+                "user_cash_in": {
+                  "summary": "Deposit funds to player wallet",
+                  "value": {
+                    "cmd": "userCash",
+                    "user_login": "test_player",
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "currency": "EUR",
+                    "operation": "in",
+                    "cash": "100.00"
+                  }
+                },
+                "user_cash_out": {
+                  "summary": "Withdraw funds from player wallet",
+                  "value": {
+                    "cmd": "userCash",
+                    "user_login": "test_player",
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "currency": "EUR",
+                    "operation": "out",
+                    "cash": "25.00"
+                  }
+                },
+                "user_info": {
+                  "summary": "Get current player balance",
+                  "value": {
+                    "cmd": "userInfo",
+                    "user_login": "test_player",
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "currency": "EUR"
+                  }
+                },
+                "report_bet": {
+                  "summary": "Get daily bet/win statistics",
+                  "value": {
+                    "cmd": "reportBet",
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "date": "2024-04-12"
+                  }
+                },
+                "session_list": {
+                  "summary": "Get sessions for date range",
+                  "value": {
+                    "cmd": "sessionList",
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "user_login": "test_player",
+                    "date_from": "2024-04-12",
+                    "date_to": "2024-04-12"
+                  }
+                },
+                "session_log": {
+                  "summary": "Get session spin log",
+                  "value": {
+                    "cmd": "sessionLog",
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "session": "7d3b9e2a-4f1c-8d06-a912-c3e5f7b29041"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Command result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferWalletResponse"
+                },
+                "examples": {
+                  "user_create": {
+                    "value": {
+                      "status": "ok",
+                      "microtime": 0.004074077606201,
+                      "date_time": "2024-04-12 12:01:40",
+                      "error": "",
+                      "content": {
+                        "id": "test_player",
+                        "player_login": "test_player",
+                        "cash": "0.00"
+                      }
+                    }
+                  },
+                  "user_cash_in": {
+                    "value": {
+                      "status": "ok",
+                      "microtime": 0.0023718090057373,
+                      "date_time": "2024-04-12 12:02:23",
+                      "error": "",
+                      "content": {
+                        "id": "test_player",
+                        "player_login": "test_player",
+                        "operation_id": "111111",
+                        "cash_before": "0.00",
+                        "cash": "100.00"
+                      }
+                    }
+                  },
+                  "user_cash_out": {
+                    "value": {
+                      "status": "ok",
+                      "microtime": 0.00211501121521,
+                      "date_time": "2024-04-12 12:04:19",
+                      "error": "",
+                      "content": {
+                        "id": "test_player",
+                        "player_login": "test_player",
+                        "operation_id": "111112",
+                        "cash_before": "100.00",
+                        "cash": "25.00"
+                      }
+                    }
+                  },
+                  "user_info": {
+                    "value": {
+                      "status": "ok",
+                      "microtime": 0.001710166931152,
+                      "date_time": "2024-04-12 12:03:48",
+                      "error": "",
+                      "content": {
+                        "id": "test_player",
+                        "player_login": "test_player",
+                        "cash": "75.00"
+                      }
+                    }
+                  },
+                  "report_bet": {
+                    "value": {
+                      "status": "ok",
+                      "microtime": 0.0030961246490479,
+                      "date_time": "2024-04-12 12:20:31",
+                      "error": "",
+                      "content": {
+                        "info": {
+                          "users_count": 257,
+                          "total_bet": "5638.21",
+                          "total_win": "5022.53",
+                          "total_different": "615.68",
+                          "date_from": "2024-04-12 00:00:00",
+                          "date_to": "2024-04-12 23:59:59"
+                        },
+                        "result": [
+                          {
+                            "user_login": "player_login_1",
+                            "bet": "12.00",
+                            "win": "5.00",
+                            "different": "7.00"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "session_list": {
+                    "value": {
+                      "status": "ok",
+                      "microtime": 0.00763503074646,
+                      "date_time": "2024-04-12 12:44:33",
+                      "error": "",
+                      "content": {
+                        "info": {
+                          "total_bet": "5638.21",
+                          "total_win": "5022.53",
+                          "date_from": "2024-04-12 00:00:00",
+                          "date_to": "2024-04-12 23:59:59"
+                        },
+                        "result": [
+                          {
+                            "id": "session_id",
+                            "game_id": "game_id",
+                            "user_login": "player_login_1",
+                            "bet": "12.00",
+                            "win": "5.00",
+                            "start": "2024-04-12 11:50:33",
+                            "end": "2024-04-12 11:52:15"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "session_log": {
+                    "value": {
+                      "status": "ok",
+                      "microtime": 0.002648057937622,
+                      "date_time": "2024-04-12 12:50:39",
+                      "error": "",
+                      "content": {
+                        "log": [
+                          {
+                            "bet_info": "{\"bet\":\"20\",\"lines\":5}",
+                            "date_time": "2024-04-12 11:07:41",
+                            "action_id": "action_id",
+                            "win": "0.00",
+                            "bet": "20.00"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or business error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferWalletResponse"
+                },
+                "examples": {
+                  "missing_signature": {
+                    "summary": "Missing X-Signature header",
+                    "value": {
+                      "status": "error",
+                      "microtime": 0.00042104721069336,
+                      "date_time": "2024-04-12 12:05:02",
+                      "error": "missing X-Signature header",
+                      "content": {
+                        "player_login": "test_player"
+                      }
+                    }
+                  },
+                  "invalid_signature": {
+                    "summary": "Signature verification failed",
+                    "value": {
+                      "status": "error",
+                      "microtime": 0.00089311599731445,
+                      "date_time": "2024-04-12 12:05:17",
+                      "error": "invalid signature",
+                      "content": {
+                        "player_login": "test_player"
+                      }
+                    }
+                  },
+                  "insufficient_funds": {
+                    "summary": "Withdrawal exceeds current balance",
+                    "value": {
+                      "status": "error",
+                      "microtime": 0.0012879371643066,
+                      "date_time": "2024-04-12 12:06:11",
+                      "error": "insufficient funds",
+                      "content": {
+                        "player_login": "test_player"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferWalletResponse"
+                },
+                "examples": {
+                  "internal_error": {
+                    "summary": "Unexpected server-side failure",
+                    "value": {
+                      "status": "error",
+                      "microtime": 0.0015549659729004,
+                      "date_time": "2024-04-12 12:06:54",
+                      "error": "internal error",
+                      "content": {
+                        "player_login": "test_player"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Obtain Access Token (login)",
+        "operationId": "login",
+        "description": "Login endpoint.\n\nRequest:\n- URL: `POST https://office-api-dev.helcenac.com/auth/login`\n- Content-Type: `application/x-www-form-urlencoded`\n- Body fields: `login`, `password`\n\n> **IMPORTANT:** `accessToken` has limited TTL. After expiry, call `/auth/login` again.\n\n> **COMMON ERROR:** do not send JSON here. Use `application/x-www-form-urlencoded`, otherwise expect HTTP 400 or 401.\n",
+        "servers": [
+          {
+            "url": "https://office-api-dev.helcenac.com"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "login": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "login",
+                  "password"
+                ]
+              },
+              "example": {
+                "login": "casino_operator",
+                "password": "Qx9#mK2!pLnR"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tokens + user info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                },
+                "example": {
+                  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0ODFlM2M5Yi03N2YyLTRkMWEtYjgzMi05YzVlMGY4YTJkMTQiLCJsb2dpbiI6ImNhc2lub19vcGVyYXRvciIsInJvbGUiOiJVc2VyIiwiaWF0IjoxNzQ1NzQ4MDAwLCJleHAiOjE3NDU4MzQ0MDB9.Xk2mN9pQrL4vJsT8hDfW3uCbYoKgP7nAeRtMzIqVl5c",
+                  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0ODFlM2M5Yi03N2YyLTRkMWEtYjgzMi05YzVlMGY4YTJkMTQiLCJ0eXBlIjoicmVmcmVzaCIsImlhdCI6MTc0NTc0ODAwMCwiZXhwIjoxNzQ2MzUyODAwfQ.mP3qRsNvTcYdJkW8xBfL2eAoGhI9ZuQlXrKtDyEwH6n",
+                  "user": {
+                    "id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "login": "casino_operator",
+                    "role": "User",
+                    "currencies": [
+                      {
+                        "currency": "USD",
+                        "count": "12450.00"
+                      },
+                      {
+                        "currency": "EUR",
+                        "count": "8320.50"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        }
+      }
+    },
+    "/users/{user_id}/getUserGames/{currencyISO}": {
+      "get": {
+        "tags": [
+          "Game Catalog"
+        ],
+        "summary": "Get user games by currency",
+        "operationId": "getUserGames",
+        "servers": [
+          {
+            "url": "https://office-api-dev.helcenac.com"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/CurrencyISOPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of available games",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GameCatalogItem"
+                  }
+                },
+                "example": [
+                  {
+                    "id": "integration_a:provider_a:game_001",
+                    "isEnabled": true,
+                    "title": "Fortune Tiger",
+                    "imageUrl": "https://static.helcenac.com/games/provider_a/game_001_288x210.jpg",
+                    "provider": "PG Soft"
+                  },
+                  {
+                    "id": "integration_b:provider_b:game_042",
+                    "isEnabled": true,
+                    "title": "Speed Roulette",
+                    "imageUrl": "https://static.helcenac.com/games/provider_b/game_042_288x210.jpg",
+                    "provider": "Evolution"
+                  }
+                ]
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/games/openGame": {
+      "post": {
+        "tags": [
+          "Game Session"
+        ],
+        "summary": "Open game (no access token required)",
+        "operationId": "openGame",
+        "description": "Open game session.\n\n- Requires `X-Signature` over raw JSON body.\n- `demo = \"1\"`: demo mode, no wallet callbacks.\n- `demo = \"0\"`: real gameplay.\n- `callbackUrl`: optional override for the admin-panel callback URL.\n- `ip`: optional player IP. Required only for some providers; ask support if your provider requires it.\n- Before assigning free spins, call `POST /games/freespinsInfo` to get the game's free-spin information.\n",
+        "servers": [
+          {
+            "url": "https://client-api-dev.helcenac.com"
+          }
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XSignatureHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenGameRequest"
+              },
+              "examples": {
+                "real_mode": {
+                  "summary": "Real mode with explicit callback URL",
+                  "value": {
+                    "currency": "USD",
+                    "demo": "0",
+                    "exitUrl": "https://casino.example.com/lobby",
+                    "gameId": "integration_a:provider_a:game_001",
+                    "language": "en",
+                    "player_login": "alex_morozov_88",
+                    "balance": 123.45,
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "ip": "8.8.8.8",
+                    "callbackUrl": "https://casino.example.com/api/wallet/callback"
+                  }
+                },
+                "demo_mode": {
+                  "summary": "Demo mode without wallet callbacks",
+                  "value": {
+                    "currency": "EUR",
+                    "demo": "1",
+                    "exitUrl": "https://casino.example.com/games",
+                    "gameId": "integration_b:provider_b:game_042",
+                    "language": "de",
+                    "player_login": "guest_demo_player",
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14"
+                  }
+                },
+                "free_spins": {
+                  "summary": "Free-spin session after eligibility check",
+                  "value": {
+                    "currency": "USD",
+                    "demo": "0",
+                    "exitUrl": "https://casino.example.com/lobby",
+                    "gameId": "integration_a:provider_a:game_001",
+                    "language": "en",
+                    "player_login": "alex_morozov_88",
+                    "balance": 123.45,
+                    "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                    "freespinTotalBet": 1.25,
+                    "freespinCount": 10
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenGameResponseSuccess"
+                },
+                "examples": {
+                  "real_mode": {
+                    "summary": "Real game session created",
+                    "value": {
+                      "status": "success",
+                      "error": "",
+                      "content": {
+                        "game": {
+                          "url": "https://client-api-dev.helcenac.com/game/pgsoft/fortune-tiger?session=7d3b9e2a-4f1c-8d06-a912-c3e5f7b29041&currency=USD&lang=en&exit=https%3A%2F%2Fcasino.example.com%2Flobby"
+                        },
+                        "gameRes": {
+                          "sessionId": "7d3b9e2a-4f1c-8d06-a912-c3e5f7b29041"
+                        }
+                      }
+                    }
+                  },
+                  "demo_mode": {
+                    "summary": "Demo launch created",
+                    "value": {
+                      "status": "success",
+                      "error": "",
+                      "content": {
+                        "game": {
+                          "url": "https://client-api-dev.helcenac.com/game/evolution/speed-roulette?session=4b1f3d75-5688-4e4f-beb8-b607df404f19&currency=EUR&lang=de&demo=1"
+                        },
+                        "gameRes": {
+                          "sessionId": "4b1f3d75-5688-4e4f-beb8-b607df404f19"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "409": {
+            "description": "Error (as per guide example)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOpenGame"
+                },
+                "example": {
+                  "status": "fail",
+                  "error": "unauthorized",
+                  "code": 409,
+                  "message": "user_id is required"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/games/freespinsInfo": {
+      "post": {
+        "tags": [
+          "Free Spins"
+        ],
+        "summary": "Get free-spin limits for a game",
+        "operationId": "freespinsInfo",
+        "security": [],
+        "servers": [
+          {
+            "url": "https://ext-api.gambleaggregator.dev",
+            "description": "External API host"
+          }
+        ],
+        "description": "Check whether a game supports free spins for the selected currency before opening a free-spin session.\n\n- `code: 0`: the game supports free spins. Use `availableBets` and `maxCount` to form the subsequent `POST /games/openGame` request.\n- `code: 1`: the game does not support free spins; do not start a free-spin session.\n- `code: 9`: the provider returned an error; inspect `message` and retry only after resolving it.\n\nAn empty `availableBets` array means that every bet amount is allowed. `maxCount: 0` means that the number of free spins is unlimited.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XSignatureHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FreespinsInfoRequest"
+              },
+              "example": {
+                "user_id": "481e3c9b-77f2-4d1a-b832-9c5e0f8a2d14",
+                "currency": "USD",
+                "gameId": "integration_a:provider_a:game_001"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Free-spin capability and limits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FreespinsInfoResponse"
+                },
+                "examples": {
+                  "supported_with_limits": {
+                    "summary": "Free spins supported with a bet and count limit",
+                    "value": {
+                      "availableBets": [
+                        0.25,
+                        0.5,
+                        1.25
+                      ],
+                      "maxCount": 100,
+                      "code": 0,
+                      "message": ""
+                    }
+                  },
+                  "supported_without_limits": {
+                    "summary": "Any bet amount and count are supported",
+                    "value": {
+                      "availableBets": [],
+                      "maxCount": 0,
+                      "code": 0,
+                      "message": ""
+                    }
+                  },
+                  "not_supported": {
+                    "summary": "Free spins are unavailable for this game",
+                    "value": {
+                      "availableBets": [],
+                      "maxCount": 0,
+                      "code": 1,
+                      "message": ""
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to retrieve free-spin information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOpenGame"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "getBalance": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Balance callback (provider -> your callback URL)",
+        "operationId": "webhookGetBalance",
+        "security": [],
+        "description": "Provider asks for current player balance.\n\n- Requires `X-Signature`.\n- Return HTTP 200 + `status: \"success\"` only when balance is confirmed.\n\n> **IMPORTANT:** HTTP 400 means `Fail / retry`. Do not start the spin. Do not use default or cached balance.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XSignatureHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallbackGetBalanceRequest"
+              },
+              "example": {
+                "cmd": "getBalance",
+                "login": "alex_morozov_88",
+                "sessionid": "7d3b9e2a-4f1c-8d06-a912-c3e5f7b29041"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current balance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallbackGetBalanceResponse"
+                },
+                "examples": {
+                  "success": {
+                    "summary": "Session is valid and balance is returned",
+                    "value": {
+                      "balance": 2500,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "",
+                      "login": "alex_morozov_88",
+                      "status": "success"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Fail / retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallbackGetBalanceResponse"
+                },
+                "examples": {
+                  "player_not_found": {
+                    "summary": "Player or wallet not found",
+                    "value": {
+                      "balance": 0,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "player not found",
+                      "login": "alex_morozov_88",
+                      "status": "fail"
+                    }
+                  },
+                  "unknown_session": {
+                    "summary": "Session is unknown",
+                    "value": {
+                      "balance": 0,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "session not found",
+                      "login": "alex_morozov_88",
+                      "status": "fail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "writeBet": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Bet/Win callback (provider -> your callback URL)",
+        "operationId": "webhookWriteBet",
+        "security": [],
+        "description": "Apply bet/win to merchant wallet.\n\nRules:\n- Accept: HTTP **2xx** + `status: \"success\"`.\n- Reject: HTTP **400+** + `status: \"fail\"`.\n- Idempotency key: `transactionId`.\n- Duplicate successful `transactionId`: return HTTP **200**, current balance, do not apply again.\n\n> **IMPORTANT:** if player balance is insufficient for the bet, reject `writeBet`. Providers do not calculate or reserve funds using `getBalance`.\n\n> **IMPORTANT:** successful response `balance` must be **after** applying the operation, not before.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XSignatureHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallbackWriteBetRequest"
+              },
+              "examples": {
+                "bet_placed": {
+                  "summary": "Player places a bet (25.00 USD)",
+                  "value": {
+                    "cmd": "writeBet",
+                    "bet": 25,
+                    "win": 0,
+                    "login": "alex_morozov_88",
+                    "sessionid": "7d3b9e2a-4f1c-8d06-a912-c3e5f7b29041",
+                    "transactionId": "txn_a3f7c912-d0e5-b841-9f2c-3e6a7d8b01c4",
+                    "round_finished": false,
+                    "info": "{\"gameType\":\"slots\",\"betPerLine\":1.25,\"lines\":20,\"roundId\":\"r_9f4a2c7b\"}"
+                  }
+                },
+                "round_finished_win": {
+                  "summary": "Round ends — player wins 75.00 USD",
+                  "value": {
+                    "cmd": "writeBet",
+                    "bet": 0,
+                    "win": 75,
+                    "login": "alex_morozov_88",
+                    "sessionid": "7d3b9e2a-4f1c-8d06-a912-c3e5f7b29041",
+                    "transactionId": "txn_b9d2e047-a1c3-f685-8e4b-2c9f1a70d356",
+                    "round_finished": true,
+                    "promoFreespin": true,
+                    "info": "{\"gameType\":\"slots\",\"betPerLine\":1.25,\"lines\":20,\"roundId\":\"r_9f4a2c7b\",\"multiplier\":3}"
+                  }
+                },
+                "bet_and_win_together": {
+                  "summary": "Bet and win in a single callback (some providers)",
+                  "value": {
+                    "cmd": "writeBet",
+                    "bet": 25,
+                    "win": 75,
+                    "login": "alex_morozov_88",
+                    "sessionid": "7d3b9e2a-4f1c-8d06-a912-c3e5f7b29041",
+                    "transactionId": "txn_c7e1a385-b2f9-4d0c-8a63-1f5e9b2d7c40",
+                    "round_finished": true,
+                    "promoFreespin": false,
+                    "info": "{\"gameType\":\"slots\",\"betPerLine\":1.25,\"lines\":20,\"roundId\":\"r_c7e1a385\",\"multiplier\":3}"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated balance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallbackWriteBetResponse"
+                },
+                "examples": {
+                  "after_bet": {
+                    "summary": "Balance after bet deducted",
+                    "value": {
+                      "balance": 2475,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "",
+                      "login": "alex_morozov_88",
+                      "status": "success"
+                    }
+                  },
+                  "after_win": {
+                    "summary": "Balance after win credited",
+                    "value": {
+                      "balance": 2550,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "",
+                      "login": "alex_morozov_88",
+                      "status": "success"
+                    }
+                  },
+                  "after_bet_and_win": {
+                    "summary": "Bet and win applied in a single callback",
+                    "value": {
+                      "balance": 2550,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "",
+                      "login": "alex_morozov_88",
+                      "status": "success"
+                    }
+                  },
+                  "duplicate": {
+                    "summary": "Duplicate transactionId already processed (idempotent replay)",
+                    "value": {
+                      "balance": 2475,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "",
+                      "login": "alex_morozov_88",
+                      "status": "success"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Fail / retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallbackWriteBetResponse"
+                },
+                "examples": {
+                  "insufficient_funds": {
+                    "summary": "Insufficient funds",
+                    "value": {
+                      "balance": 5,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "insufficient funds",
+                      "login": "alex_morozov_88",
+                      "status": "fail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "rollback": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Rollback callback (provider -> your callback URL)",
+        "operationId": "webhookRollback",
+        "security": [],
+        "description": "Roll back the original bet.\n\n- `transactionId` must match the original bet transaction ID.\n- Restore balance only once.\n",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XSignatureHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallbackRollbackRequest"
+              },
+              "example": {
+                "cmd": "rollback",
+                "bet": 25,
+                "win": 0,
+                "login": "alex_morozov_88",
+                "sessionid": "7d3b9e2a-4f1c-8d06-a912-c3e5f7b29041",
+                "transactionId": "txn_a3f7c912-d0e5-b841-9f2c-3e6a7d8b01c4",
+                "round_finished": true,
+                "info": "{\"reason\":\"provider_timeout\",\"originalRound\":\"r_9f4a2c7b\"}",
+                "gameId": "integration_a:provider_a:game_001"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Balance restored after rollback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallbackWriteBetResponse"
+                },
+                "example": {
+                  "balance": 2500,
+                  "currency": "USD",
+                  "duration": 330,
+                  "error": "",
+                  "login": "alex_morozov_88",
+                  "status": "success"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Fail / retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallbackWriteBetResponse"
+                },
+                "examples": {
+                  "unknown_session": {
+                    "summary": "Session not found",
+                    "value": {
+                      "balance": 0,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "unknown session",
+                      "login": "alex_morozov_88",
+                      "status": "fail"
+                    }
+                  },
+                  "already_rolled_back": {
+                    "summary": "Transaction already rolled back",
+                    "value": {
+                      "balance": 2500,
+                      "currency": "USD",
+                      "duration": 330,
+                      "error": "transaction already rolled back",
+                      "login": "alex_morozov_88",
+                      "status": "fail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
